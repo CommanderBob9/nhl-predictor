@@ -1,0 +1,9 @@
+[project]
+name = "nhl-predictor"
+version = "0.1.0"
+description = "Pre-game win probabilities for NHL games"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
