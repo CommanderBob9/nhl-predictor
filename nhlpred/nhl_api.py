@@ -24,6 +24,7 @@ SETTLED_AFTER_DAYS = 3
 
 def make_session() -> requests.Session:
     """A requests session that retries transient errors with backoff."""
+    
     retry = Retry(
         total=5,
         backoff_factor=1.0,
