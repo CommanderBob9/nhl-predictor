@@ -53,14 +53,14 @@ def test_overtime_and_shootout_are_recorded():
 
 
 def test_live_game_scores_are_not_trusted():
-    raw, listed = games_by_id(load_week())[202502006]
+    raw, listed = games_by_id(load_week())[2025020060]
     game = parse_game(raw, listed)
     assert game.game_state == "LIVE"
     assert game.home_score is None and game.away_score is None
 
 
 def test_preseason_games_are_skipped():
-    raw, listed = games_by_id(load_week())[2025020099]
+    raw, listed = games_by_id(load_week())[2025010099]
     assert parse_game(raw, listed) is None
 
 
@@ -71,14 +71,107 @@ def test_next_cursor_never_skips_a_day_with_games():
     payload = {
         "nextStartDate": "2026-11-12",
         "gameWeek": [
-            {"date": f"2026-11-{d:02d}", "games": [{"id": d}]} for d in range (5, 11)
+            {"date": f"2026-11-{d:02d}", "games": [{"id": d}]} for d in range(5, 11)
         ]
     }
     assert next_cursor(date(2026, 11, 5), payload) == date(2026, 11, 11)
 
 
 def test_next_cursor_jumps_over_an_empty_week():
+    payload = {"nextStartDate": "2026-02-25", "gameWeek": [{"date": "2026-02-10", "games": []}]}
+    assert next_cursor(date(2026, 2, 10), payload) == date(2026, 2, 25)
 
+
+def test_next_cursor_always_moves_forward():
+    payload = {"nextStartDate": "2020-01-01", "gameWeek": []}  # nonsense date in the past
+    assert next_cursor(date(2026, 1, 1), payload) == date(2026, 1, 2)
 
 
 # --- fetch_season -------------------------------------------------------------
+
+def make_game(game_id, season, game_type=2, state="OFF", home="TOR", away="MTL"):
+    raw = {
+        "id": game_id, "season": season, "gameType": game_type, "gameState": state,
+        "gameScheduleState": "OK", "homeTeam": {"abbrev": home}, "awayTeam": {"abbrev": away},
+    }
+    if state == "OFF":
+        raw["homeTeam"]["score"], raw["awayTeam"]["score"] = 3, 2
+        raw["gameOutcome"] = {"lastPeriodType": "REG"}
+    return raw
+
+
+class FakeSchedule:
+    """Stands in for NHLClient: serves a fake league calendar from memory."""
+
+    def __init__(self, games_by_date: dict[date, list[dict]]):
+        self.games_by_date = games_by_date
+        self.requested: list[date] = []
+
+    def schedule_week(self, start: date) -> dict:
+        self.requested.append(start)
+        days = [start + timedelta(days=i) for i in range(7)]
+        week = [
+            {"date": d.isoformat(), "games": self.games_by_date.get(d, [])} for d in days
+        ]
+        future = sorted(d for d in self.games_by_date if d > days[-1])
+        return {
+            "gameWeek": week,
+            "nextStartDate": future[0].isoformat() if future else None,
+        }
+
+
+def test_fetch_season_collects_only_that_season_and_stops_at_the_next():
+    calendar = {
+        date(2025, 9, 20): [make_game(2025010001, 20252026, game_type=1)],  # preseason
+        date(2025, 10, 8): [make_game(2025020001, 20252026)],
+        date(2026, 1, 15): [make_game(2025020500, 20252026)],
+        date(2026, 5, 1): [make_game(2025030111, 20252026, game_type=3)],    # playoffs
+        date(2026, 9, 25): [make_game(2026010001, 20262027, game_type=1)],  # next season
+        date(2026, 10, 10): [make_game(2026020001, 20262027)],
+    }
+    client = FakeSchedule(calendar)
+
+    games = fetch_season(client, 2025)
+
+    assert [g.game_id for g in games] == [2025020001, 2025020500, 2025030111]
+    assert all(g.season == 20252026 for g in games)
+    # stopped as soon as next season showed up, didn't walk to the hard stop
+    assert max(client.requested) < date(2026, 10, 1)
+
+
+def test_fetch_season_skips_last_seasons_games_in_a_late_start_year():
+    # 2020-21 started in January while 2019-20 playoffs ran into September.
+    calendar = {
+        date(2020, 9, 20): [make_game(2019030415, 20192020, game_type=3)],
+        date(2021, 1, 13): [make_game(2020020001, 20202021)],
+        date(2021, 9, 26): [make_game(2021010001, 20212022, game_type=1)],
+    }
+    games = fetch_season(FakeSchedule(calendar), 2020)
+    assert [g.game_id for g in games] == [2020020001]
+
+
+def test_season_in_progress_stops_at_end_of_published_schedule():
+    # Playoffs aren't scheduled yet, so nothing exists after mid-April.
+    calendar = {
+        date(2026, 10, 10): [make_game(2026020001, 20262027)],
+        date(2026, 11, 20): [make_game(2026020300, 20262027, state="FUT")],
+        date(2027, 4, 15): [make_game(2026021344, 20262027, state="FUT")],
+    }
+    client = FakeSchedule(calendar)
+    games = fetch_season(client, 2026, today=date(2026, 10, 29))
+    assert len(games) == 3
+    assert max(client.requested) < date(2027, 5, 1)  # didn't walk on to Oct 2027
+
+
+def test_rescheduled_game_keeps_its_latest_listing():
+    postponed = make_game(2025020300, 20252026, state="FUT")
+    postponed["gameScheduleState"] = "PPD"
+    calendar = {
+        date(2025, 12, 1): [postponed],
+        date(2026, 2, 20): [make_game(2025020300, 20252026, state="OFF")],
+        date(2026, 9, 25): [make_game(2026010001, 20262027, game_type=1)],
+    }
+    (game,) = fetch_season(FakeSchedule(calendar), 2025)
+    assert game.game_date == "2026-02-20"
+    assert game.game_state == "OFF"
+    assert game.home_score == 3
