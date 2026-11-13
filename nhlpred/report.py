@@ -33,7 +33,7 @@ GAMES_PER_TEAM_SQL = """
 WITH appearances AS (
     SELECT season, home_team AS team FROM completed_games WHERE game_type = 2
     UNION ALL
-    SELCECT season, away_team AS team FROM completed_games WHERE game_type = 2
+    SELECT season, away_team AS team FROM completed_games WHERE game_type = 2
 )
 SELECT season, team, COUNT(*) AS games
 FROM appearances
@@ -53,3 +53,57 @@ WHERE game_state = 'FUT' AND schedule_state = 'OK'
 """
 
 
+def fmt_season(season: int) -> str:
+    s = str(season)
+    return f"{s[:4]}-{s[6:]}"
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description="Sanity-check the games database.")
+    parser.add_argument("--db", type=Path, default=DB_PATH)
+    args = parser.parse_args(argv)
+
+    conn = connect(args.db)
+    #Check how many games each team played in a season (should be 82)
+    per_team: dict[int: list[int]] = {}
+    for row in conn.execute(GAMES_PER_TEAM_SQL):
+        per_team.setdefault(row["season"], []).append(row["games"])
+
+    #Get season summary
+    rows = conn.execute(SEASON_SUMMARY_SQL).fetchall()
+    if not rows:
+        print("No completed games yet. Run 'python -m nhlpred.ingest' first.")
+        return
+
+    #Print season summary
+    print(f"{'season':<9}{'games':>7}{'home win':>10}{'OT/SO':>8}{'games/team':>13}")
+    for row in rows:
+        counts = per_team.get(row['season'], [0])
+        spread = f"{min(counts)}-{max(counts)}" if min(counts) != max(counts) else str(min(counts))
+        print(
+            f"{fmt_season(row['season']):<9}"
+            f"{row['games']:>7,}"
+            f"{row['home_win_rate']:>10.1%}"
+            f"{row['past_regulation_rate']:>8.1%}"
+            f"{spread:>13}"
+        )
+
+
+    overall = conn.execute(OVERALL_SQL).fetchone()
+    print(
+        f"\nBaseline (always pick the home team): {overall['home_win_rate']:.1%} "
+        f"accuracy over {overall['games']:,} regular-season games"
+    )
+
+    upcoming = conn.execute(UPCOMING_SQL).fetchone()
+    if upcoming['games']:
+        print(f"Upcoming scheduled games: {upcoming['games']:,} (next on {upcoming['next_date']})")
+    print(
+        "\nNote: games per team should be 82 for finished seasons, except"
+        " 2019-20 (cut short by COVID) . It also varies in the season in progress."
+    )
+    conn.close()
+
+
+if __name__ == "__main__":
+    main()
