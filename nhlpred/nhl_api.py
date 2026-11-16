@@ -79,7 +79,11 @@ class NHLClient:
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload), encoding="utf-8")
+        # Write to a temporary name, then rename. A rename is atomic, so a crash
+        # mid-write can never leave a half-written file that breaks every later run.
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload), encoding="utf-8")
+        tmp.replace(path)
 
     # Calls API and saves a week of data starting from start date
     def schedule_week(self, start: date) -> dict:
@@ -101,6 +105,9 @@ class NHLClient:
         response = self.session.get(url, timeout=20)
         response.raise_for_status()
         payload = response.json()
+        if "gameWeek" not in payload:
+            # An unexpected body must not look like an empty week, and must not be cached.
+            raise ValueError(f"unexpected schedule response for {start}: keys {sorted(payload)}")
 
         if self._is_settled(start):
             self._write_cache(start, payload)

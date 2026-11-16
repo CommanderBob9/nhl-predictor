@@ -61,7 +61,14 @@ INSERT INTO games ({", ".join(COLUMNS)})
 VALUES ({", ".join("?" for _ in COLUMNS)})
 ON CONFLICT (game_id) DO UPDATE SET
     {", ".join(f"{c} = excluded.{c}" for c in COLUMNS if c != "game_id")}
+-- Never let a non-final listing overwrite a final score: update only if the new
+-- listing is final, or the stored row is not final yet.
+WHERE excluded.game_state IN ('OFF', 'FINAL')
+   OR games.game_state IS NULL
+   OR games.game_state NOT IN ('OFF', 'FINAL')
 """
+
+COMPLETED_GAMES_SQL = "SELECT * FROM completed_games ORDER BY game_date, game_id"
 
 
 # Opens the database return a connection object
@@ -89,3 +96,12 @@ def upsert_games(conn: sqlite3.Connection, games: Iterable[Game]) -> int:
     with conn: # one transaction, all changes made or no changes made
         conn.executemany(UPSERT_SQL, rows)
     return len(rows)
+
+
+def load_completed_games(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every finished game, oldest first.
+
+    This is the one query the models read results from, so "what counts as a result"
+    is decided in a single place: the completed_games view.
+    """
+    return conn.execute(COMPLETED_GAMES_SQL).fetchall()

@@ -9,13 +9,14 @@ Safe to re-run any time: finished weeks come from the local cache and every writ
 """
 
 import argparse
+import sqlite3
 from collections import Counter
 from datetime import date
 from pathlib import Path
 
 from nhlpred import DB_PATH, RAW_DIR
 from nhlpred.db import connect, upsert_games
-from nhlpred.games import PLAYOFFS, REGULAR_SEASON, fetch_season
+from nhlpred.games import PLAYOFFS, REGULAR_SEASON, Game, ScheduleSource, fetch_season
 from nhlpred.nhl_api import NHLClient
 
 DEFAULT_FIRST_SEASON = 2015
@@ -28,19 +29,38 @@ def current_season_start_year(today: date | None = None) -> int:
     return today.year if today.month >= 8 else today.year - 1
 
 
-def run(first: int, last: int, db_path: Path, use_cache: bool = True) -> int:
-    client = NHLClient(cache_dir=RAW_DIR if use_cache else None)
+def pull_season(
+    conn: sqlite3.Connection, client: ScheduleSource, start_year: int, today: date | None = None
+) -> list[Game]:
+    """Fetch one season and save it. Used by this command and by the daily job.
+
+    A season with no games at all is treated as an error, not as a quiet success. It
+    means the API changed or failed, and a daily job that carried on would conclude
+    "no games today" and silently stop predicting.
+    """
+    games = fetch_season(client, start_year, today)
+    if not games:
+        raise RuntimeError(f"the API returned no games for the season starting in {start_year}")
+    upsert_games(conn, games)
+    return games
+
+
+def run(
+    first: int, last: int, db_path: Path, use_cache: bool = True, client: ScheduleSource | None = None
+) -> int:
+    # `client` can be passed in so tests can use a fake one instead of the network.
+    client = client or NHLClient(cache_dir=RAW_DIR if use_cache else None)
     conn = connect(db_path)
     total = 0
     try:
         for start_year in range(first, last + 1):
-            games = fetch_season(client, start_year)
-            saved = upsert_games(conn, games)
+            games = pull_season(conn, client, start_year)
+            saved = len(games)
             total += saved
             types = Counter(g.game_type for g in games)
             final = sum(g.home_score is not None for g in games)
             print(
-                f"{start_year}-{str(start_year + 1)[2:]}:"
+                f"{start_year}-{str(start_year + 1)[2:]}: "
                 f"{types[REGULAR_SEASON]:>5,} regular season, "
                 f"{types[PLAYOFFS]:>3} playoff, "
                 f"{final:>5,} final   ->   {saved:,} saved"

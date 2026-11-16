@@ -8,6 +8,10 @@ Prints, per regular season:
 - how often the home team won, every model must beat "always pick the home team"
 - min/max games per team, to catch gaps in the pull (each team should have played
   the same number of games in a finished season)
+
+The home win rate printed at the end covers every season in the database. It describes
+the data. It is not the baseline the models are scored against: that one is computed
+in nhlpred/evaluate.py from the seasons before the ones being evaluated.
 """
 
 import argparse
@@ -43,7 +47,7 @@ GROUP BY season, team
 OVERALL_SQL = """
 SELECT COUNT(*) AS games, AVG(home_win) AS home_win_rate
 FROM completed_games
-WHERE game_type = 2 and neutral_site = 0
+WHERE game_type = 2 AND neutral_site = 0
 """
 
 UPCOMING_SQL = """
@@ -63,19 +67,24 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--db", type=Path, default=DB_PATH)
     args = parser.parse_args(argv)
 
+    if not args.db.exists():
+        # connect() would create an empty database here, hiding a typo in the path.
+        parser.error(f"{args.db} does not exist. Run 'python -m nhlpred.ingest' first.")
+
     conn = connect(args.db)
-    #Check how many games each team played in a season (should be 82)
-    per_team: dict[int: list[int]] = {}
+    # Check how many games each team played in a season (one number per finished season)
+    per_team: dict[int, list[int]] = {}
     for row in conn.execute(GAMES_PER_TEAM_SQL):
         per_team.setdefault(row["season"], []).append(row["games"])
 
-    #Get season summary
+    # Get season summary
     rows = conn.execute(SEASON_SUMMARY_SQL).fetchall()
     if not rows:
         print("No completed games yet. Run 'python -m nhlpred.ingest' first.")
+        conn.close()
         return
 
-    #Print season summary
+    # Print season summary
     print(f"{'season':<9}{'games':>7}{'home win':>10}{'OT/SO':>8}{'games/team':>13}")
     for row in rows:
         counts = per_team.get(row['season'], [0])
@@ -91,16 +100,18 @@ def main(argv: list[str] | None = None) -> None:
 
     overall = conn.execute(OVERALL_SQL).fetchone()
     print(
-        f"\nBaseline (always pick the home team): {overall['home_win_rate']:.1%} "
-        f"accuracy over {overall['games']:,} regular-season games"
+        f"\nHome win rate, all seasons: {overall['home_win_rate']:.1%} "
+        f"over {overall['games']:,} regular-season games "
+        "(describes the data; not the evaluation baseline)"
     )
 
     upcoming = conn.execute(UPCOMING_SQL).fetchone()
     if upcoming['games']:
         print(f"Upcoming scheduled games: {upcoming['games']:,} (next on {upcoming['next_date']})")
     print(
-        "\nNote: games per team should be 82 for finished seasons, except"
-        " 2019-20 (cut short by COVID) . It also varies in the season in progress."
+        "\nNote: games per team should be a single number in a finished season: 82, except"
+        " 2019-20 (68 to 71, cut short by COVID), 2020-21 (56) and 84 from 2026-27 on."
+        " It varies in the season in progress."
     )
     conn.close()
 

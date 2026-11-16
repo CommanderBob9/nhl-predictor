@@ -2,7 +2,9 @@ import json
 from datetime import date, timedelta
 from pathlib import Path
 
-from nhlpred.games import fetch_season, next_cursor, parse_game, season_id
+import pytest
+
+from nhlpred.games import fetch_season, next_cursor, parse_game, season_id, season_label
 
 FIXTURE = Path(__file__).parent / "fixtures" / "schedule_week.json"
 
@@ -175,3 +177,45 @@ def test_rescheduled_game_keeps_its_latest_listing():
     assert game.game_date == "2026-02-20"
     assert game.game_state == "OFF"
     assert game.home_score == 3
+
+
+def test_a_final_listing_is_not_replaced_by_a_later_listing_without_a_score():
+    # The mirror image of the test above: the final listing comes first, and a stale
+    # unplayed listing of the same game follows. The final score must survive.
+    calendar = {
+        date(2025, 11, 20): [make_game(2025020300, 20252026, state="OFF")],
+        date(2025, 12, 1): [make_game(2025020300, 20252026, state="FUT")],
+        date(2026, 9, 25): [make_game(2026010001, 20262027, game_type=1)],
+    }
+    (game,) = fetch_season(FakeSchedule(calendar), 2025)
+    assert game.game_date == "2025-11-20"
+    assert game.home_score == 3
+
+
+def test_a_listing_without_a_season_does_not_stop_the_walk():
+    no_season = make_game(2025020002, 20252026)
+    del no_season["season"]
+    calendar = {
+        date(2025, 10, 8): [make_game(2025020001, 20252026), no_season],
+        date(2026, 9, 25): [make_game(2026010001, 20262027, game_type=1)],
+    }
+    games = fetch_season(FakeSchedule(calendar), 2025)
+    assert [g.game_id for g in games] == [2025020001]
+
+
+def test_a_malformed_game_fails_with_the_game_id_and_date():
+    broken = make_game(2025020001, 20252026)
+    del broken["homeTeam"]["abbrev"]
+    calendar = {date(2025, 10, 8): [broken]}
+    with pytest.raises(ValueError, match="game 2025020001 on 2025-10-08 has no 'abbrev'"):
+        fetch_season(FakeSchedule(calendar), 2025)
+
+
+def test_neutral_site_is_read_for_a_regular_season_game():
+    raw = make_game(2025020400, 20252026)
+    raw["neutralSite"] = True
+    assert parse_game(raw, "2025-11-14").neutral_site is True
+
+
+def test_season_label_is_the_inverse_of_season_id():
+    assert season_label(season_id(2025)) == "2025-26"

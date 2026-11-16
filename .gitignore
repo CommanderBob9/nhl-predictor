@@ -8,6 +8,15 @@ venv/
 # Local data (rebuilt by `python -m nhlpred.ingest`)
 data/
 
+# Front end
+node_modules/
+frontend/dist/
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+
 # Editors / OS
 .vscode/
 .idea/

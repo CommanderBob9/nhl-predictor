@@ -35,6 +35,12 @@ def season_id(start_year: int) -> int:
     return int(f"{start_year}{start_year + 1}")
 
 
+def season_label(season: int) -> str:
+    """Convert the NHL API format into the way people write it: 20252026 -> '2025-26'"""
+    text = str(season)
+    return f"{text[:4]}-{text[6:]}"
+
+
 def parse_game(raw: dict, listed_date: str) -> Game | None:
     """Convert one game object from the API into a Game, or None to skip it.
     
@@ -96,11 +102,19 @@ def fetch_season(
 
         for day in payload.get("gameWeek") or []:
             for raw in day.get("games") or []:
-                seasons_seen.add(raw.get("season"))
-                if raw.get("season") != target:
+                season = raw.get("season")
+                if season is not None:  # min() below cannot compare None with an int
+                    seasons_seen.add(season)
+                if season != target:
                     continue
-                game = parse_game(raw, day["date"])
-                if game is not None:
+                try:
+                    game = parse_game(raw, day["date"])
+                except KeyError as missing:
+                    # Fail loudly, but say which game, so the fixture to add is obvious.
+                    raise ValueError(
+                        f"game {raw.get('id')} on {day['date']} has no {missing}"
+                    ) from missing
+                if game is not None and _should_replace(found.get(game.game_id), game):
                     found[game.game_id] = game
 
         if seasons_seen and min(seasons_seen) > target:
@@ -108,6 +122,18 @@ def fetch_season(
         cursor = next_cursor(cursor, payload)
 
     return sorted(found.values(), key=lambda g: (g.game_date, g.game_id))
+
+
+def _should_replace(previous: Game | None, new: Game) -> bool:
+    """A game listed twice keeps its latest listing, unless that would lose a final score.
+
+    A rescheduled game shows up again under its new date, and the later listing is the
+    one to keep. The exception protects the "trust only final scores" rule: a listing
+    with a final score is never replaced by one without.
+    """
+    if previous is None or previous.home_score is None:
+        return True
+    return new.home_score is not None
 
 
 def _nothing_scheduled_after(payload: dict) -> bool:

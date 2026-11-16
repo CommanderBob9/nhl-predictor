@@ -1,2 +1,4 @@
-requests>=2.31
-pytest>=8.0
+# Versions are pinned so a laptop, CI and the daily job all run the same code.
+# Add a package only when code in the repository uses it.
+requests==2.34.2        # NHL API client
+pytest==9.2.0           # tests
