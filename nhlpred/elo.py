@@ -1,4 +1,9 @@
-"""Elo ratings: a pre-game home win probability for every game, using only past results."""
+"""Elo ratings: a pre-game home win probability for every game, using only past results.
+
+Usage:
+    python -m nhlpred.elo           # validation and test results next to the baseline
+    python -m nhlpred.elo --plot reports/caliibration_elo.png
+"""
 
 START_RATING = 1500
 K = 6
@@ -16,10 +21,12 @@ def home_win_probability(home_rating: float, away_rating: float, home_adv=HOME_A
     return p
 
 
-def run_elo(games: list, k=K, carry_over=CARRY_OVER, home_adv=HOME_ADV) -> tuple[list[dict], dict[str, float]]:
+def run_elo(games: list, k=K, carry_over=CARRY_OVER, home_adv=HOME_ADV
+            ) -> tuple[list[dict], dict[str, float]]:
     """Walk games in date order. For each, record the pre-game ratings and
     probability, then update the ratings. Regress towards 1500 at each new season."""
-    ratings = {}
+    games = sorted(games, key=lambda game: (game["game_date"], game["game_id"]))
+    ratings: dict[str, float] = {}
     predictions = []
     prev_season = None
 
@@ -58,8 +65,9 @@ def run_elo(games: list, k=K, carry_over=CARRY_OVER, home_adv=HOME_ADV) -> tuple
     return predictions, ratings
 
 
-def evaluate(predictions: list[dict], from_season: int = 20232024) -> dict:
-    """Accuracy and log loss for regular-season games from 'from_season' onward."""
+def model_version(k: float = K, carry_over: float = CARRY_OVER, home_adv: float = HOME_ADV) -> str:
+    """The prediction settings stored as text next to every live prediction."""
+    return f"k={k:g};home_adv={home_adv:g};carry_over={carry_over:.3f}"
 
 
 def main() -> None:
